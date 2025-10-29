@@ -1,0 +1,7 @@
+{
+  "name": "The Literary Echo - An AI Biographer",
+  "description": "An intimate and creative AI agent that collaborates with you to write your memoir or biography in the distinctive literary style of a chosen, renowned author.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
