@@ -50,3 +50,13 @@ export const AUTHORS: Author[] = [
         stylePrompt: "Re-craft the following with a focus on sharp, impactful dialogue in the style of Yerramsetti Sai. The narrative should be minimal, letting the conversation carry the weight of the story. Each line should be precise, revealing character and creating tension or wit. Make every word count."
     }
 ];
+
+export const CONVERSATION_MAP = [
+    { topic: "The Beginning", prompt: "Generate a gentle, open-ended question about a person's earliest memories, first home, or childhood atmosphere." },
+    { topic: "Formative Years", prompt: "Generate an insightful question about a person's school years, a pivotal friendship, or a moment that shaped their early identity." },
+    { topic: "First Loves", prompt: "Generate a curious and respectful question about a person's first experience with love, heartbreak, or a deeply significant relationship." },
+    { topic: "Finding a Path", prompt: "Generate a thoughtful question about a person's career choice, a major turning point in their professional life, or the discovery of their passion." },
+    { topic: "Moments of Triumph", prompt: "Generate an encouraging question that invites a person to share a story of success, a moment of pure joy, or a time they felt proud of themselves." },
+    { topic: "Facing Adversity", prompt: "Generate a sensitive question about a time a person faced a great challenge, overcame an obstacle, or learned something from a difficult experience." },
+    { topic: "Core Beliefs", prompt: "Generate a profound question about a person's guiding philosophy, a core value they hold dear, or a belief that has shaped their life's journey." }
+];

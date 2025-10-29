@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { GoogleGenAI, LiveSession, LiveServerMessage, Modality } from '@google/genai';
 import type { Author, ConversationTurn } from '../types';
+import { CONVERSATION_MAP } from '../constants';
 import { encode, decode, decodeAudioData } from '../utils/audio';
 
 // Define a type for Blob to align with Gemini's expectation
@@ -15,6 +16,7 @@ const ConversationView: React.FC<{ author: Author, onBack: () => void }> = ({ au
     const [transcript, setTranscript] = useState<ConversationTurn[]>([]);
     const [archive, setArchive] = useState<string[]>([]);
     const [isWeaving, setIsWeaving] = useState(false);
+    const [topicIndex, setTopicIndex] = useState(0);
     
     const currentInputTranscriptionRef = useRef('');
     const currentOutputTranscriptionRef = useRef('');
@@ -50,6 +52,65 @@ const ConversationView: React.FC<{ author: Author, onBack: () => void }> = ({ au
         getOpeningLine();
     }, [getOpeningLine]);
 
+    const playAudio = useCallback(async (base64Audio: string) => {
+        if (!outputAudioContextRef.current) {
+            outputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+        }
+        const outputAudioContext = outputAudioContextRef.current;
+        const nextStartTime = Math.max(nextStartTimeRef.current, outputAudioContext.currentTime);
+        const audioBuffer = await decodeAudioData(decode(base64Audio), outputAudioContext, 24000, 1);
+        const source = outputAudioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(outputAudioContext.destination);
+        source.addEventListener('ended', () => {
+            sourcesRef.current.delete(source);
+        });
+        source.start(nextStartTime);
+        nextStartTimeRef.current = nextStartTime + audioBuffer.duration;
+        sourcesRef.current.add(source);
+    }, []);
+
+    const askNextQuestion = useCallback(async () => {
+        if (topicIndex >= CONVERSATION_MAP.length) {
+            setStatus("We've covered a wonderful journey. Feel free to continue sharing, or we can weave this narrative together.");
+            return;
+        }
+        
+        const currentTopic = CONVERSATION_MAP[topicIndex];
+        setStatus(`The Archivist is asking about "${currentTopic.topic}"...`);
+
+        try {
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
+            
+            // 1. Generate the question text
+            const questionGenResponse = await ai.models.generateContent({
+                model: 'gemini-2.5-pro',
+                contents: `${currentTopic.prompt} Frame the question in the first person, as if you are the biographer speaking directly to the user. Make it sound natural and empathetic, in the style of ${author.name}.`,
+            });
+            const questionText = questionGenResponse.text;
+            setTranscript(prev => [...prev, { speaker: 'ai', text: questionText }]);
+
+            // 2. Generate audio for the question
+            const ttsResponse = await ai.models.generateContent({
+                model: "gemini-2.5-flash-preview-tts",
+                contents: [{ parts: [{ text: questionText }] }],
+                config: {
+                  responseModalities: [Modality.AUDIO],
+                  speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
+                },
+            });
+
+            const base64Audio = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+            if (base64Audio) {
+                await playAudio(base64Audio);
+            }
+            setStatus('Listening...');
+        } catch (error) {
+            console.error("Error asking next question:", error);
+            setStatus("There was a brief silence. Let's try again. Listening...");
+        }
+    }, [topicIndex, author.name, playAudio]);
+
     const generateStyledProse = useCallback(async (memory: string) => {
         setStatus('The archivist is writing...');
         try {
@@ -64,41 +125,33 @@ const ConversationView: React.FC<{ author: Author, onBack: () => void }> = ({ au
             console.error("Error generating styled prose:", error);
             setArchive(prev => [...prev, `[Error transforming memory: ${memory}]`]);
         }
-        setStatus('Listening...');
+        setTopicIndex(prev => prev + 1);
     }, [author.stylePrompt]);
+
+    useEffect(() => {
+        if(isLive && topicIndex > 0 && topicIndex <= CONVERSATION_MAP.length) {
+            askNextQuestion();
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [topicIndex, isLive]);
 
 
     const handleMessage = async (message: LiveServerMessage) => {
         let inputUpdated = false;
-        let outputUpdated = false;
 
         if (message.serverContent?.inputTranscription) {
             currentInputTranscriptionRef.current += message.serverContent.inputTranscription.text;
             inputUpdated = true;
         }
-        if (message.serverContent?.outputTranscription) {
-            currentOutputTranscriptionRef.current += message.serverContent.outputTranscription.text;
-            outputUpdated = true;
-        }
         
-        if (inputUpdated || outputUpdated) {
+        if (inputUpdated) {
              setTranscript(prev => {
                 const newTranscript = [...prev];
-                if (inputUpdated) {
-                    const lastTurn = newTranscript[newTranscript.length - 1];
-                    if (lastTurn?.speaker === 'user') {
-                        lastTurn.text = currentInputTranscriptionRef.current;
-                    } else {
-                        newTranscript.push({ speaker: 'user', text: currentInputTranscriptionRef.current });
-                    }
-                }
-                if (outputUpdated) {
-                    const lastTurn = newTranscript[newTranscript.length - 1];
-                    if (lastTurn?.speaker === 'ai') {
-                        lastTurn.text = currentOutputTranscriptionRef.current;
-                    } else {
-                        newTranscript.push({ speaker: 'ai', text: currentOutputTranscriptionRef.current });
-                    }
+                const lastTurn = newTranscript[newTranscript.length - 1];
+                if (lastTurn?.speaker === 'user') {
+                    lastTurn.text = currentInputTranscriptionRef.current;
+                } else {
+                    newTranscript.push({ speaker: 'user', text: currentInputTranscriptionRef.current });
                 }
                 return newTranscript;
             });
@@ -108,30 +161,18 @@ const ConversationView: React.FC<{ author: Author, onBack: () => void }> = ({ au
         if (message.serverContent?.turnComplete) {
             const userMemory = currentInputTranscriptionRef.current;
             currentInputTranscriptionRef.current = '';
-            currentOutputTranscriptionRef.current = '';
+            currentOutputTranscriptionRef.current = ''; // Reset AI transcript too, as it's not used in this flow
             if (userMemory.trim().length > 10) { // Only process if there's substantial input
-                generateStyledProse(userMemory);
+                await generateStyledProse(userMemory); // This will trigger the useEffect for the next question
+            } else {
+                // If the user didn't say much, just ask the next question without saving.
+                setTopicIndex(prev => prev + 1);
             }
         }
 
         const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
         if (base64Audio) {
-            if (!outputAudioContextRef.current) {
-                outputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-            }
-            const outputAudioContext = outputAudioContextRef.current;
-
-            const nextStartTime = Math.max(nextStartTimeRef.current, outputAudioContext.currentTime);
-            const audioBuffer = await decodeAudioData(decode(base64Audio), outputAudioContext, 24000, 1);
-            const source = outputAudioContext.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(outputAudioContext.destination);
-            source.addEventListener('ended', () => {
-                sourcesRef.current.delete(source);
-            });
-            source.start(nextStartTime);
-            nextStartTimeRef.current = nextStartTime + audioBuffer.duration;
-            sourcesRef.current.add(source);
+            await playAudio(base64Audio);
         }
 
         if (message.serverContent?.interrupted) {
@@ -146,6 +187,7 @@ const ConversationView: React.FC<{ author: Author, onBack: () => void }> = ({ au
     const startConversation = async () => {
         setStatus('Connecting...');
         setIsLive(true);
+        setTopicIndex(0); // Reset to the beginning
 
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -159,7 +201,7 @@ const ConversationView: React.FC<{ author: Author, onBack: () => void }> = ({ au
                 model: 'gemini-2.5-flash-native-audio-preview-09-2025',
                 callbacks: {
                     onopen: () => {
-                        setStatus('Listening...');
+                        askNextQuestion(); // Ask the first question
                         const source = inputAudioContext.createMediaStreamSource(stream);
                         const scriptProcessor = inputAudioContext.createScriptProcessor(4096, 1, 1);
                         scriptProcessorRef.current = scriptProcessor;
@@ -191,8 +233,7 @@ const ConversationView: React.FC<{ author: Author, onBack: () => void }> = ({ au
                 config: {
                     responseModalities: [Modality.AUDIO],
                     inputAudioTranscription: {},
-                    outputAudioTranscription: {},
-                    systemInstruction: `You are an Empathetic Archivist, a patient and insightful biographer. Your task is to help the user write their memoir in the distinctive literary style of ${author.name}. Ask gentle, open-ended questions to guide them through their memories. Your tone is warm, curious, and respectful.`,
+                    systemInstruction: `You are an Empathetic Archivist, a patient and insightful biographer. Your main role in this live session is to listen intently to the user's spoken memories and provide an accurate transcription. Do not ask questions or make comments. The main application will guide the conversation.`,
                 },
             });
 
